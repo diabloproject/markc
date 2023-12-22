@@ -1,76 +1,20 @@
 mod types;
+mod context;
+mod plugin;
+mod plugins;
 
 use crate::types::*;
 use clap::Parser;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+use crate::context::Context;
+use crate::plugin::{Plugin, PluginError};
 
 #[derive(Parser, Debug, Clone)]
 struct Args {
     file: PathBuf,
-}
-
-#[derive(Debug, Error)]
-pub enum PluginError {
-    #[error("Function `{0}` is not found.")]
-    FunctionNotFound(String),
-    #[error("Invalid arguments")]
-    InvalidArguments,
-    #[error("External error: `{0}`")]
-    ExternalError(String),
-    #[error("Nested compilation error: `{0}`")]
-    CompilationError(Box<CompilationError>),
-}
-
-#[derive(Debug, Clone)]
-pub struct Context {
-    path: PathBuf
-}
-
-pub trait Plugin {
-    fn exposed_functions(&self) -> &'static [Function];
-    fn function_called(&self, function: &str, arguments: Vec<Value>, ctx: Context) -> Result<Vec<MarkdownPart>, PluginError>;
-}
-
-
-pub struct Core;
-
-impl Core {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Plugin for Core {
-    fn exposed_functions(&self) -> &'static [Function] {
-        &[
-            Function {
-                name: "include",
-                signatures: &[&[Type::Path]],
-            }
-        ]
-    }
-
-    fn function_called(&self, function: &str, arguments: Vec<Value>, ctx: Context) -> Result<Vec<MarkdownPart>, PluginError> {
-        match function {
-            "include" => {
-                match arguments.first() {
-                    None => { Err(PluginError::InvalidArguments) }
-                    Some(x) => {
-                        match x {
-                            Value::Path(path) => {
-                                let path = ctx.path.join(path);
-                                parse_md(&path)
-                                    .map_err(|err| PluginError::CompilationError(Box::new(err)))
-                            }
-                            _ => Err(PluginError::InvalidArguments)
-                        }
-                    }
-                }
-            }
-            _ => Err(PluginError::FunctionNotFound(function.into()))
-        }
-    }
+    #[arg(short, long, default_value = "dist.md")]
+    output: PathBuf,
 }
 
 #[derive(Debug, Error)]
@@ -89,18 +33,6 @@ impl From<std::io::Error> for CompilationError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-enum MarkdownPart {
-    Text {
-        content: String,
-        source: PathBuf,
-    },
-    Call {
-        function: String,
-        arguments: Vec<Value>,
-        source: PathBuf
-    },
-}
 
 
 fn parse_md(path: &Path) -> Result<Vec<MarkdownPart>, CompilationError> {
@@ -135,7 +67,7 @@ fn parse_md(path: &Path) -> Result<Vec<MarkdownPart>, CompilationError> {
                     parts.push(MarkdownPart::Call {
                         function,
                         arguments,
-                        source: path.into()
+                        source: path.into(),
                     });
                     cs = CurrentState::InText;
                     buf = String::new();
@@ -275,7 +207,7 @@ fn evaluate(content: Vec<MarkdownPart>, plugins: &[Box<dyn Plugin>]) -> Result<V
             }
         }
     };
-    return Ok(new_parts)
+    return Ok(new_parts);
 }
 
 fn rebuild(content: Vec<MarkdownPart>) -> String {
@@ -294,10 +226,7 @@ fn rebuild(content: Vec<MarkdownPart>) -> String {
 fn main() {
     let args: Args = Args::parse();
     let content = parse_md(&args.file).unwrap();
-    println!("{:?}", &content);
-    let content = evaluate(content, &[Box::new(Core::new())]).unwrap();
-    println!("{:?}", content);
+    let content = evaluate(content, &[Box::new(plugins::include::IncludePlugin::new())]).unwrap();
     let content = rebuild(content);
-    println!("{:?}", content);
-    std::fs::write(args.file.parent().unwrap().join("dist.md"), content).unwrap();
+    std::fs::write(args.output, content).unwrap();
 }
